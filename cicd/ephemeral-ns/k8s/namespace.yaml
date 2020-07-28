@@ -1,0 +1,7 @@
+kind: Namespace
+apiVersion: v1
+metadata:
+  generateName: petclinic-
+  labels:
+    developer-namespace: "yes"
+    ephemeral: "yes"

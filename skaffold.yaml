@@ -1,0 +1,27 @@
+apiVersion: skaffold/v2beta5
+kind: Config
+metadata:
+  name: spring-one-petclinic
+build:
+  artifacts:
+    - image: registry.failk8s.dev/failk8s/petclinic-native
+      custom:
+        buildCommand: docker build -t $IMAGE . && docker push $IMAGE
+        #buildCommand: ./mvnw spring-boot:build-image -DskipTests -D spring-boot.build-image.imageName=$IMAGE && docker push $IMAGE
+        dependencies:
+          paths:
+            - src/main/resources
+            - target/classes
+            - Dockerfile
+      sync:
+        manual:
+          - src: "src/main/resources/**/*"
+            dest: app
+            strip: src/main/resources/
+          - src: "target/classes/**/*"
+            dest: app
+            strip: target/classes/
+deploy:
+  kubectl:
+    manifests:
+    - k8s/deploy.yaml

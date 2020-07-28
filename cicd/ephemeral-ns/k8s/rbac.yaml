@@ -1,0 +1,34 @@
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: petclinic
+secrets:
+- name: registry-creds
+imagePullSecrets:
+- name: registry-creds
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: create-knative-service
+rules:
+- apiGroups:
+  - serving.knative.dev
+  resources:
+  - services
+  verbs:
+  - get
+  - create
+  - update
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: create-namespace-and-knative-service-binding
+subjects:
+- kind: ServiceAccount
+  name: petclinic
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: create-knative-service

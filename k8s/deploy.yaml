@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: petclinic
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: petclinic
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vmware-system-tmc-psp-privileged
+subjects:
+- kind: ServiceAccount
+  name: petclinic
+---
+apiVersion: failk8s.dev/v1alpha1
+kind: SecretCopierConfig
+metadata:
+  name: petclinic
+spec:
+  rules:
+  - sourceSecret:
+      name: registry-creds
+      namespace: tanzu-developer
+    targetSecret:
+      name: petclinic-regcred
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: petclinic
+  labels:
+    app: petclinic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: petclinic
+  template:
+    metadata:
+      labels:
+        app: petclinic
+    spec:
+      containers:
+      - name: petclinic
+        image: registry.failk8s.dev/failk8s/petclinic-native
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+      imagePullSecrets:
+      - name: petclinic-regcred
+      serviceAccountName: petclinic
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: petclinic
+spec:
+  selector:
+    app: petclinic
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: petclinic
+spec:
+  rules:
+  - host: petclinic-dev.apps.failk8s.dev
+    http:
+      paths:
+      - backend:
+          serviceName: petclinic
+          servicePort: 8080
+        path: /
+  tls:
+  - hosts:
+    - petclinic-dev.apps.failk8s.dev
+    secretName: wildcard

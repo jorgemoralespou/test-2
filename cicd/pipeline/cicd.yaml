@@ -1,0 +1,651 @@
+apiVersion: failk8s.dev/v1alpha1
+kind: SecretCopierConfig
+metadata:
+  name: petclinic
+spec:
+  rules:
+  - sourceSecret:
+      name: registry-creds
+      namespace: tanzu-developer
+    targetNamespaces:
+      labelSelector:
+        matchLabels:
+          inject-secret: "yes"
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: petclinic-pipeline
+  labels:
+    inject-secret: "yes"
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: triggers-sa
+  namespace: petclinic-pipeline
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: tekton-triggers-github-minimal
+  namespace: petclinic-pipeline
+rules:
+- apiGroups:
+  - triggers.tekton.dev
+  resources:
+  - eventlisteners
+  - triggerbindings
+  - triggertemplates
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - secrets
+  - serviceaccounts
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - tekton.dev
+  resources:
+  - pipelineruns
+  - pipelineresources
+  - taskruns
+  verbs:
+  - create
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: tekton-triggers-github-binding
+  namespace: petclinic-pipeline
+subjects:
+- kind: ServiceAccount
+  name: triggers-sa
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tekton-triggers-github-minimal
+---
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: TriggerTemplate
+metadata:
+  name: github-template
+  namespace: petclinic-pipeline
+spec:
+  params:
+  - name: gitrevision
+  - name: gitrepositoryurl
+  - name: pullrequesturl
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1beta1
+    kind: PipelineRun
+    metadata:
+      generateName: petclinic-native-cicd-
+    spec:
+      pipelineRef:
+        name: petclinic-native-cicd
+      params:
+      - name: BUILDER_IMAGE
+        value: nebhale/native-image-builder:0.8.0-20200727.232211-93
+      - name: REQUEST_URL
+        value: $(params.pullrequesturl)
+      resources:
+      - name: source
+        resourceSpec:
+          type: git
+          params:
+          - name: revision
+            value: $(params.gitrevision)
+          - name: url
+            value: $(tt.params.gitrepositoryurl)
+      - name: image
+        resourceRef:
+          name: petclinic-image
+      serviceAccountName: petclinic
+---
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: TriggerBinding
+metadata:
+  name: github-binding
+  namespace: petclinic-pipeline
+spec:
+  params:
+  - name: gitrevision
+    value: $(body.pull_request.head.sha)
+  - name: gitrepositoryurl
+    value: $(body.repository.clone_url)
+  - name: pullrequesturl
+    value: $(body.pull_request.html_url)
+---
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: EventListener
+metadata:
+  name: github-listener-interceptor
+  namespace: petclinic-pipeline
+spec:
+  serviceAccountName: triggers-sa
+  triggers:
+  - name: github-listener
+    interceptors:
+    - cel:
+        filter: body.action in ['opened', 'synchronize', 'reopened']
+    bindings:
+    - ref: github-binding
+    template:
+      name: github-template
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: el-github-listener-interceptor
+  namespace: petclinic-pipeline
+spec:
+  rules:
+  - host: petclinic-native-cicd.apps.failk8s.dev
+    http:
+      paths:
+      - backend:
+          serviceName: el-github-listener-interceptor
+          servicePort: 8080
+        path: /
+  tls:
+  - hosts:
+    - petclinic-native-cicd.apps.failk8s.dev
+    secretName: wildcard
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: petclinic
+  namespace: petclinic-pipeline
+secrets:
+- name: registry-creds
+imagePullSecrets:
+- name: registry-creds
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildpack-config
+  namespace: petclinic-pipeline
+data:
+  BP_BOOT_NATIVE_IMAGE: "1"
+  BP_BOOT_NATIVE_IMAGE_BUILD_ARGUMENTS: -H:+RemoveSaturatedTypeFlows  -Dspring.native.remove-yaml-support=true  -Dspring.native.remove-jmx-support=true  -Dspring.xml.ignore=true  --enable-all-security-services  -H:EnableURLProtocols=http,https
+  BP_MAVEN_BUILD_ARGUMENTS: -Pjar-no-dev -DskipTests package
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: create-dev-environment
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  - serviceaccounts
+  - configmaps
+  - services
+  - secrets
+  - persistentvolumeclaims
+  verbs:
+  - get
+  - create
+  - update
+  - patch
+- apiGroups:
+  - serving.knative.dev
+  resources:
+  - services
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - failk8s.dev
+  resources:
+  - secretcopierconfigs
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - extensions
+  resources:
+  - ingresses
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - roles
+  - rolebindings
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - list
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: create-dev-environment-binding
+subjects:
+- kind: ServiceAccount
+  name: petclinic
+  namespace: petclinic-pipeline
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: create-dev-environment
+---
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineResource
+metadata:
+  name: petclinic-image
+  namespace: petclinic-pipeline
+spec:
+  type: image
+  params:
+  - name: url
+    value: registry.failk8s.dev/failk8s/petclinic-native
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: buildpacks
+  namespace: petclinic-pipeline
+spec:
+  params:
+  - name: BUILDER_IMAGE
+    description: The image on which builds will run (must include v3 lifecycle and
+      compatible buildpacks).
+  - name: CACHE
+    description: The name of the persistent app cache volume.
+    default: empty-dir
+  - name: PLATFORM_DIR
+    description: The name of the platform directory.
+    default: empty-dir
+  - name: USER_ID
+    description: The user ID of the builder image user.
+    default: "1000"
+  - name: GROUP_ID
+    description: The group ID of the builder image user.
+    default: "1000"
+  - name: PROCESS_TYPE
+    description: The default process type to set on the image.
+    default: web
+  - name: SOURCE_SUBPATH
+    description: A subpath within the `source` input where the source to build is
+      located.
+    default: ""
+  - name: ENV_CONFIG_MAP
+    description: ConfigMap with all the Env variables to add
+    default: buildpack-config
+  resources:
+    inputs:
+    - name: source
+      type: git
+    outputs:
+    - name: image
+      type: image
+  stepTemplate:
+    env:
+    - name: CNB_PLATFORM_API
+      value: "0.3"
+  steps:
+  - name: prepare
+    image: alpine
+    imagePullPolicy: Always
+    command:
+    - /bin/sh
+    args:
+    - -c
+    - mkdir "/platform/env" && cp -HR /buildpaks-env/* /platform/env/ && chown -R
+      "$(params.USER_ID):$(params.GROUP_ID)" "/tekton/home" &&  chown -R "$(params.USER_ID):$(params.GROUP_ID)"
+      "/layers" && chown -R "$(params.USER_ID):$(params.GROUP_ID)"  "/platform" &&  chown
+      -R "$(params.USER_ID):$(params.GROUP_ID)" "/cache" &&  chown -R "$(params.USER_ID):$(params.GROUP_ID)"
+      "$(resources.inputs.source.path)"
+    volumeMounts:
+    - name: layers-dir
+      mountPath: /layers
+    - name: $(params.CACHE)
+      mountPath: /cache
+    - name: $(params.PLATFORM_DIR)
+      mountPath: /platform
+    - name: buildpaks-env
+      mountPath: /buildpaks-env
+    securityContext:
+      privileged: true
+  - name: log-env
+    image: alpine
+    imagePullPolicy: Always
+    command:
+    - /bin/sh
+    args:
+    - -c
+    - ls -l "/buildpaks-env/" && for f in $(ls /buildpaks-env/); do echo "--- $f";
+      cat /buildpaks-env/$f; done && ls -l "/platform/env/" && for f in $(ls /platform/env/);
+      do echo "--- $f"; cat /platform/env/$f; done
+    volumeMounts:
+    - name: buildpaks-env
+      mountPath: /buildpaks-env
+    - name: $(params.PLATFORM_DIR)
+      mountPath: /platform
+  - name: detect
+    image: $(params.BUILDER_IMAGE)
+    imagePullPolicy: Always
+    command:
+    - /cnb/lifecycle/detector
+    args:
+    - -app=$(resources.inputs.source.path)
+    - -group=/layers/group.toml
+    - -plan=/layers/plan.toml
+    volumeMounts:
+    - name: layers-dir
+      mountPath: /layers
+    - name: $(params.PLATFORM_DIR)
+      mountPath: /platform
+  - name: analyze
+    image: $(params.BUILDER_IMAGE)
+    imagePullPolicy: Always
+    command:
+    - /cnb/lifecycle/analyzer
+    args:
+    - -layers=/layers
+    - -group=/layers/group.toml
+    - -cache-dir=/cache
+    - $(resources.outputs.image.url)
+    volumeMounts:
+    - name: $(params.CACHE)
+      mountPath: /cache
+    - name: layers-dir
+      mountPath: /layers
+  - name: restore
+    image: $(params.BUILDER_IMAGE)
+    imagePullPolicy: Always
+    command:
+    - /cnb/lifecycle/restorer
+    args:
+    - -group=/layers/group.toml
+    - -layers=/layers
+    - -cache-dir=/cache
+    volumeMounts:
+    - name: $(params.CACHE)
+      mountPath: /cache
+    - name: layers-dir
+      mountPath: /layers
+  - name: build
+    image: $(params.BUILDER_IMAGE)
+    imagePullPolicy: Always
+    command:
+    - /cnb/lifecycle/builder
+    args:
+    - -app=$(resources.inputs.source.path)
+    - -layers=/layers
+    - -group=/layers/group.toml
+    - -plan=/layers/plan.toml
+    volumeMounts:
+    - name: layers-dir
+      mountPath: /layers
+    - name: $(params.PLATFORM_DIR)
+      mountPath: /platform
+  - name: export
+    image: $(params.BUILDER_IMAGE)
+    imagePullPolicy: Always
+    command:
+    - /cnb/lifecycle/exporter
+    args:
+    - -app=$(resources.inputs.source.path)
+    - -layers=/layers
+    - -group=/layers/group.toml
+    - -cache-dir=/cache
+    - -process-type=$(params.PROCESS_TYPE)
+    - $(resources.outputs.image.url)
+    volumeMounts:
+    - name: layers-dir
+      mountPath: /layers
+    - name: $(params.CACHE)
+      mountPath: /cache
+  volumes:
+  - name: empty-dir
+    emptyDir: {}
+  - name: layers-dir
+    emptyDir: {}
+  - name: buildpaks-env
+    configMap:
+      name: buildpack-config
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: deploy-knative-service
+  namespace: petclinic-pipeline
+spec:
+  resources:
+    inputs:
+    - name: source
+      type: git
+    - name: image
+      type: image
+  results:
+  - name: namespace
+    description: The name of the ephemeral namespace created for testing the PR
+  - name: url
+    description: The url of the created Knative service
+  steps:
+  - name: kubectl-create-ephemeral-ns
+    image: bitnami/kubectl
+    script: |
+      #!/usr/bin/env bash
+      kubectl create -f "$(resources.inputs.source.path)/cicd/ephemeral-ns/k8s/namespace.yaml" -o jsonpath='{ .metadata.name }' | tee $(results.namespace.path)
+  - name: kubectl-create-database
+    image: bitnami/kubectl
+    script: |
+      #!/usr/bin/env bash
+      ns=$(cat "$(results.namespace.path)")
+      kubectl -n ${ns} apply -f $(resources.inputs.source.path)/cicd/ephemeral-ns/k8s/mysql.yaml
+  - name: ytt-kapp-create-ksvc
+    image: k14s/image:kbld-rand-1592942790507001000-1148625018150
+    script: |
+      #!/usr/bin/env bash
+      ns=$(cat "$(results.namespace.path)")
+      ytt -f $(resources.inputs.source.path)/cicd/ephemeral-ns/k8s/ksvc.yaml -f $(resources.inputs.source.path)/cicd/ephemeral-ns/overlay/v.yaml --data-value-yaml built_image=$(resources.inputs.image.url) -f $(resources.inputs.source.path)/cicd/ephemeral-ns/overlay/ksvc-overlay.yaml | kapp deploy -a petclinic-ksvc -n ${ns} -y -f -
+  - name: kubectl-get-ksvc-url
+    image: bitnami/kubectl
+    script: |
+      #!/usr/bin/env bash
+      ns=$(cat "$(results.namespace.path)")
+      kubectl get ksvc petclinic -n ${ns} -o jsonpath='{.status.url}' | tee $(results.url.path)
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: github-add-comment
+  labels:
+    app.kubernetes.io/version: "0.1"
+  annotations:
+    tekton.dev/pipelines.minVersion: 0.12.1
+    tekton.dev/tags: github
+    tekton.dev/displayName: add github comment
+spec:
+  description: This Task will add a comment to a pull request or an issue.
+  params:
+  - name: GITHUB_HOST_URL
+    description: |
+      The GitHub host, adjust this if you run a GitHub enteprise.
+    default: api.github.com
+    type: string
+  - name: API_PATH_PREFIX
+    description: |
+      The API path prefix, GitHub Enterprise has a prefix e.g. /api/v3
+    default: ""
+    type: string
+  - name: REQUEST_URL
+    description: |
+      The GitHub issue or pull request URL where we want to add a new
+      comment.
+    type: string
+  - name: COMMENT
+    description: |
+      The actual comment to add.
+    type: string
+  steps:
+  - name: add-comment
+    env:
+    - name: GITHUBTOKEN
+      valueFrom:
+        secretKeyRef:
+          name: github
+          key: token
+    image: registry.access.redhat.com/ubi8/ubi:latest
+    script: |
+      #!/usr/libexec/platform-python
+      import json
+      import os
+      import http.client
+      import urllib.parse
+      split_url = urllib.parse.urlparse(
+          "$(params.REQUEST_URL)").path.split("/")
+      # This will convert https://github.com/foo/bar/pull/202 to
+      # api url path /repos/foo/issues/202
+      api_url = "$(params.API_PATH_PREFIX)" + "/repos/" + "/".join(split_url[1:3]) + \
+                "/issues/" + split_url[-1]
+      # Trying to avoid quotes issue as much as possible by using triple
+      # quotes
+      comment = """$(params.COMMENT)"""
+      data = {
+          "body": comment,
+      }
+      print("Sending this data to GitHub: ")
+      print(data)
+      conn = http.client.HTTPSConnection("$(params.GITHUB_HOST_URL)")
+      r = conn.request(
+          "POST",
+          api_url + "/comments",
+          body=json.dumps(data),
+          headers={
+              "User-Agent": "TektonCD, the peaceful cat",
+              "Authorization": "Bearer " + os.environ["GITHUBTOKEN"],
+          })
+      resp = conn.getresponse()
+      if not str(resp.status).startswith("2"):
+          print("Error: %d" % (resp.status))
+          print(resp.read())
+      else:
+        print("a GitHub comment has been added to "
+              "$(params.REQUEST_URL)")
+---
+apiVersion: tekton.dev/v1alpha1
+kind: Condition
+metadata:
+  name: secret-exists
+  namespace: petclinic-pipeline
+spec:
+  check:
+    image: bitnami/kubectl
+    script: |
+      kubectl get secret github -n petclinic-pipeline
+---
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: petclinic-native-cicd
+  namespace: petclinic-pipeline
+spec:
+  params:
+  - name: BUILDER_IMAGE
+    description: The image on which builds will run (must include v3 lifecycle and
+      compatible buildpacks).
+    type: string
+  - name: SOURCE_SUBPATH
+    description: A subpath within the `source` input where the source to build is
+      located.
+    type: string
+  - name: REQUEST_URL
+    description: URL of the pull request triggering this pipeline.
+  resources:
+  - name: source
+    type: git
+  - name: image
+    type: image
+  tasks:
+  - name: build
+    taskRef:
+      name: buildpacks
+    params:
+    - name: BUILDER_IMAGE
+      value: $(params.BUILDER_IMAGE)
+    resources:
+      inputs:
+      - name: source
+        resource: source
+      outputs:
+      - name: image
+        resource: image
+  - name: deploy
+    taskRef:
+      name: deploy-knative-service
+    resources:
+      inputs:
+      - name: source
+        resource: source
+      - name: image
+        resource: image
+        from:
+        - build
+  - name: github-url-comment
+    conditions:
+    - conditionRef: secret-exists
+    taskRef:
+      name: github-add-comment
+    params:
+    - name: COMMENT
+      value: $(tasks.deploy.results.url)
+    - name: REQUEST_URL
+      value: $(params.REQUEST_URL)
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: privileged-triggers
+  namespace: petclinic-pipeline
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vmware-system-tmc-psp-privileged
+subjects:
+- kind: ServiceAccount
+  name: triggers-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: privileged-pipeline
+  namespace: petclinic-pipeline
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vmware-system-tmc-psp-privileged
+subjects:
+- kind: ServiceAccount
+  name: petclinic

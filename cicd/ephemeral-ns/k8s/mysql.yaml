@@ -1,0 +1,147 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: mysql
+      release: mysql
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: mysql
+        release: mysql
+    spec:
+      containers:
+      - env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: mysql-root-password
+              name: mysql
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: mysql-password
+              name: mysql
+              optional: true
+        - name: MYSQL_USER
+        - name: MYSQL_DATABASE
+          value: petclinic
+        image: mysql:5.7.30
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD}
+          failureThreshold: 3
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        name: mysql
+        ports:
+        - containerPort: 3306
+          name: mysql
+          protocol: TCP
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD}
+          failureThreshold: 3
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /var/lib/mysql
+          name: data
+      dnsPolicy: ClusterFirst
+      initContainers:
+      - command:
+        - rm
+        - -fr
+        - /var/lib/mysql/lost+found
+        image: busybox:1.32
+        imagePullPolicy: IfNotPresent
+        name: remove-lost-found
+        resources:
+          requests:
+            cpu: 10m
+            memory: 10Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /var/lib/mysql
+          name: data
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 999
+        runAsUser: 999
+      serviceAccount: default
+      serviceAccountName: default
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: mysql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+spec:
+  ports:
+  - name: mysql
+    port: 3306
+    protocol: TCP
+    targetPort: mysql
+  selector:
+    app: mysql
+    release: mysql
+  sessionAffinity: None
+  type: ClusterIP
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: mysql
+type: Opaque
+data:
+  mysql-password: cGFzc3dvcmQxMjMh
+  mysql-root-password: cGFzc3dvcmQxMjMh
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: mysql
+data:
+  run.sh: ""
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: mysql
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 8Gi

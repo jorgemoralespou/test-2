@@ -1,0 +1,11 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#@overlay/match by=overlay.subset({"kind": "Service", "metadata" : {"name": "petclinic"}})
+---
+spec:
+  template:
+    spec:
+      containers:
+      #@overlay/match by=overlay.index(0)
+      - image: #@ data.values.built_image
